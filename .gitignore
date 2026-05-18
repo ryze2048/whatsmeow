@@ -1,0 +1,66 @@
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+vendor/
+
+# Build / dist
+dist/
+build/
+out/
+target/
+
+# Cache
+.cache/
+.tmp/
+temp/
+tmp/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# Java
+*.class
+
+# JavaScript / TypeScript
+coverage/
+.next/
+.nuxt/
+.parcel-cache/
+*.tsbuildinfo
+
+# Rust
+Cargo.lock
+
+# Go
+bin/
+
+# Misc
+*.pid
+*.seed
