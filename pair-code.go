@@ -46,8 +46,14 @@ const (
 	PairClientAndroid        PairClientType = "e"
 )
 
+const (
+	linkingCodeLength   = 8
+	linkingCodeAlphabet = "123456789ABCDEFGHJKLMNPQRSTVWXYZ"
+)
+
 var notNumbers = regexp.MustCompile("[^0-9]")
-var linkingBase32 = base32.NewEncoding("123456789ABCDEFGHJKLMNPQRSTVWXYZ")
+var linkingBase32 = base32.NewEncoding(linkingCodeAlphabet)
+var linkingCodeCleaner = strings.NewReplacer("-", "", " ", "")
 
 type phoneLinkingCache struct {
 	jid         types.JID
@@ -56,15 +62,37 @@ type phoneLinkingCache struct {
 	pairingRef  string
 }
 
-func generateCompanionEphemeralKey() (ephemeralKeyPair *keys.KeyPair, ephemeralKey []byte, encodedLinkingCode string) {
+func normalizeLinkingCode(code string) (string, error) {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	code = linkingCodeCleaner.Replace(code)
+	if len(code) != linkingCodeLength {
+		return "", ErrInvalidPairCode
+	}
+	for _, char := range code {
+		if !strings.ContainsRune(linkingCodeAlphabet, char) {
+			return "", ErrInvalidPairCode
+		}
+	}
+	return code, nil
+}
+
+func formatLinkingCode(code string) string {
+	return code[:4] + "-" + code[4:]
+}
+
+func generateCompanionEphemeralKeyWithCode(linkingCode string) (ephemeralKeyPair *keys.KeyPair, ephemeralKey []byte, encodedLinkingCode string, err error) {
+	if linkingCode == "" {
+		encodedLinkingCode = linkingBase32.EncodeToString(random.Bytes(5))
+	} else if encodedLinkingCode, err = normalizeLinkingCode(linkingCode); err != nil {
+		return
+	}
 	ephemeralKeyPair = keys.NewKeyPair()
 	salt := random.Bytes(32)
 	iv := random.Bytes(16)
-	linkingCode := random.Bytes(5)
-	encodedLinkingCode = linkingBase32.EncodeToString(linkingCode)
 	linkCodeKey := pbkdf2.Key([]byte(encodedLinkingCode), salt, 2<<16, 32, sha256.New)
 	linkCipherBlock, _ := aes.NewCipher(linkCodeKey)
-	encryptedPubkey := ephemeralKeyPair.Pub[:]
+	encryptedPubkey := make([]byte, 32)
+	copy(encryptedPubkey, ephemeralKeyPair.Pub[:])
 	cipher.NewCTR(linkCipherBlock, iv).XORKeyStream(encryptedPubkey, encryptedPubkey)
 	ephemeralKey = make([]byte, 80)
 	copy(ephemeralKey[0:32], salt)
@@ -90,10 +118,21 @@ func generateCompanionEphemeralKey() (ephemeralKeyPair *keys.KeyPair, ephemeralK
 //
 // See https://faq.whatsapp.com/1324084875126592 for more info
 func (cli *Client) PairPhone(ctx context.Context, phone string, showPushNotification bool, clientType PairClientType, clientDisplayName string) (string, error) {
+	return cli.PairPhoneWithCode(ctx, phone, "", showPushNotification, clientType, clientDisplayName)
+}
+
+// PairPhoneWithCode is like PairPhone, but uses a caller-provided pairing code.
+//
+// The code may be provided as 8 characters or as xxxx-xxxx. It is normalized to uppercase and must only contain
+// characters from the WhatsApp pairing alphabet: 123456789ABCDEFGHJKLMNPQRSTVWXYZ.
+func (cli *Client) PairPhoneWithCode(ctx context.Context, phone, code string, showPushNotification bool, clientType PairClientType, clientDisplayName string) (string, error) {
 	if cli == nil {
 		return "", ErrClientIsNil
 	}
-	ephemeralKeyPair, ephemeralKey, encodedLinkingCode := generateCompanionEphemeralKey()
+	ephemeralKeyPair, ephemeralKey, encodedLinkingCode, err := generateCompanionEphemeralKeyWithCode(code)
+	if err != nil {
+		return "", err
+	}
 	phone = notNumbers.ReplaceAllString(phone, "")
 	if len(phone) <= 6 {
 		return "", ErrPhoneNumberTooShort
@@ -139,7 +178,7 @@ func (cli *Client) PairPhone(ctx context.Context, phone string, showPushNotifica
 		linkingCode: encodedLinkingCode,
 		pairingRef:  string(pairingRef),
 	}
-	return encodedLinkingCode[0:4] + "-" + encodedLinkingCode[4:], nil
+	return formatLinkingCode(encodedLinkingCode), nil
 }
 
 func (cli *Client) tryHandleCodePairNotification(ctx context.Context, parentNode *waBinary.Node) {

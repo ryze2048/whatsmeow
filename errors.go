@@ -27,6 +27,7 @@ var (
 
 	ErrPhoneNumberTooShort           = errors.New("phone number too short")
 	ErrPhoneNumberIsNotInternational = errors.New("international phone number required (must not start with 0)")
+	ErrInvalidPairCode               = errors.New("pair code must be 8 characters using the WhatsApp pairing alphabet")
 
 	ErrQRAlreadyConnected = errors.New("GetQRChannel must be called before connecting")
 	ErrQRStoreContainsID  = errors.New("GetQRChannel can only be called when there's no user ID in the client's Store")
