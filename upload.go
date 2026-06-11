@@ -213,42 +213,91 @@ func (cli *Client) rawUpload(ctx context.Context, dataToUpload io.Reader, upload
 		mmsType = fmt.Sprintf("newsletter-%s", mmsType)
 		uploadPrefix = "newsletter"
 	}
-	var host string
+	hosts := mediaConn.Hosts
+	if len(hosts) == 0 {
+		return fmt.Errorf("failed to upload media: no media hosts available")
+	}
 	// Hacky hack to prefer last option (rupload.facebook.com) for messenger uploads.
 	// For some reason, the primary host doesn't work, even though it has the <upload/> tag.
 	if cli.MessengerConfig != nil {
-		host = mediaConn.Hosts[len(mediaConn.Hosts)-1].Hostname
+		hosts = hosts[len(hosts)-1:]
 	} else {
-		host = mediaConn.Hosts[0].Hostname
+		uploadHosts := make([]MediaConnHost, 0, len(hosts)*2)
+		fallbackHosts := make([]MediaConnHost, 0, len(hosts))
+		seenHosts := make(map[string]struct{}, len(hosts)*2)
+		appendHost := func(target *[]MediaConnHost, hostname string) {
+			if hostname == "" {
+				return
+			}
+			if _, seen := seenHosts[hostname]; seen {
+				return
+			}
+			seenHosts[hostname] = struct{}{}
+			*target = append(*target, MediaConnHost{Hostname: hostname, Upload: true})
+		}
+		for _, host := range hosts {
+			if host.Upload {
+				appendHost(&uploadHosts, host.Hostname)
+				appendHost(&uploadHosts, host.FallbackHostname)
+			} else {
+				appendHost(&fallbackHosts, host.Hostname)
+				appendHost(&fallbackHosts, host.FallbackHostname)
+			}
+		}
+		if len(uploadHosts) > 0 {
+			hosts = append(uploadHosts, fallbackHosts...)
+		} else {
+			hosts = fallbackHosts
+		}
 	}
-	uploadURL := url.URL{
-		Scheme:   "https",
-		Host:     host,
-		Path:     fmt.Sprintf("/%s/%s/%s", uploadPrefix, mmsType, token),
-		RawQuery: q.Encode(),
-	}
+	var lastErr error
+	for idx, host := range hosts {
+		if idx > 0 {
+			seeker, ok := dataToUpload.(io.Seeker)
+			if !ok {
+				return lastErr
+			}
+			if _, err = seeker.Seek(0, io.SeekStart); err != nil {
+				return fmt.Errorf("failed to rewind upload data after %w: %w", lastErr, err)
+			}
+		}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL.String(), dataToUpload)
-	if err != nil {
-		return fmt.Errorf("failed to prepare request: %w", err)
-	}
+		uploadURL := url.URL{
+			Scheme:   "https",
+			Host:     host.Hostname,
+			Path:     fmt.Sprintf("/%s/%s/%s", uploadPrefix, mmsType, token),
+			RawQuery: q.Encode(),
+		}
 
-	req.ContentLength = int64(uploadSize)
-	req.Header.Set("Origin", socket.Origin)
-	req.Header.Set("Referer", socket.Origin+"/")
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL.String(), dataToUpload)
+		if err != nil {
+			return fmt.Errorf("failed to prepare request: %w", err)
+		}
 
-	httpResp, err := cli.mediaHTTP.Do(req)
-	if err != nil {
-		err = fmt.Errorf("failed to execute request: %w", err)
-	} else if httpResp.StatusCode != http.StatusOK {
-		err = fmt.Errorf("upload failed with status code %d", httpResp.StatusCode)
-	} else if err = json.NewDecoder(httpResp.Body).Decode(&resp); err != nil {
-		err = fmt.Errorf("failed to parse upload response: %w", err)
+		req.ContentLength = int64(uploadSize)
+		req.Header.Set("Origin", socket.Origin)
+		req.Header.Set("Referer", socket.Origin+"/")
+
+		httpResp, err := cli.mediaHTTP.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to execute request: %w", err)
+		} else if httpResp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("upload failed with status code %d", httpResp.StatusCode)
+		} else if err = json.NewDecoder(httpResp.Body).Decode(&resp); err != nil {
+			lastErr = fmt.Errorf("failed to parse upload response: %w", err)
+		} else {
+			_ = httpResp.Body.Close()
+			return nil
+		}
+		if httpResp != nil {
+			_ = httpResp.Body.Close()
+		}
+		if ctx.Err() != nil || idx >= len(hosts)-1 {
+			return lastErr
+		}
+		cli.Log.Warnf("Failed to upload media to %s: %v, trying next host...", host.Hostname, lastErr)
 	}
-	if httpResp != nil {
-		_ = httpResp.Body.Close()
-	}
-	return err
+	return lastErr
 }
 
 // DeleteMedia deletes the media at the given direct path from WhatsApp servers.

@@ -1084,9 +1084,34 @@ func (cli *Client) preparePeerMessageNode(
 		if err != nil {
 			return nil, fmt.Errorf("failed to get LID for PN %s: %w", to, err)
 		}
+		if encryptionIdentity.IsEmpty() {
+			encryptionIdentity = to
+		} else {
+			cli.migrateSessionStore(ctx, to, encryptionIdentity)
+		}
+	}
+	var bundle *prekey.Bundle
+	sessionExists, err := cli.Store.ContainsSession(ctx, encryptionIdentity.SignalAddress())
+	if err != nil {
+		return nil, fmt.Errorf("failed to check peer message session with %s: %w", encryptionIdentity, err)
+	}
+	if !sessionExists {
+		preKeyResponses, fetchErr := cli.fetchPreKeys(ctx, []types.JID{to})
+		if fetchErr != nil {
+			return nil, fmt.Errorf("failed to fetch prekey for peer message to %s: %w", to, fetchErr)
+		}
+		preKeyResponse, ok := preKeyResponses[to]
+		if !ok {
+			return nil, fmt.Errorf("prekey response for peer message to %s was missing", to)
+		} else if preKeyResponse.err != nil {
+			return nil, fmt.Errorf("invalid prekey response for peer message to %s: %w", to, preKeyResponse.err)
+		} else if preKeyResponse.bundle == nil {
+			return nil, fmt.Errorf("prekey response for peer message to %s contained no bundle", to)
+		}
+		bundle = preKeyResponse.bundle
 	}
 	start = time.Now()
-	encrypted, isPreKey, err := cli.encryptMessageForDevice(ctx, plaintext, encryptionIdentity, nil, nil, nil)
+	encrypted, isPreKey, err := cli.encryptMessageForDevice(ctx, plaintext, encryptionIdentity, bundle, nil, nil)
 	timings.PeerEncrypt = time.Since(start)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encrypt peer message for %s: %v", to, err)

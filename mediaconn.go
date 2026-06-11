@@ -22,7 +22,9 @@ import (
 
 // MediaConnHost represents a single host to download media from.
 type MediaConnHost struct {
-	Hostname string
+	Hostname         string
+	FallbackHostname string
+	Upload           bool
 	//IPs      []MediaConnIP
 }
 
@@ -87,7 +89,9 @@ func (cli *Client) queryMediaConn(ctx context.Context) (*MediaConn, error) {
 		}
 		cag := child.AttrGetter()
 		mc.Hosts = append(mc.Hosts, MediaConnHost{
-			Hostname: cag.String("hostname"),
+			Hostname:         cag.String("hostname"),
+			FallbackHostname: cag.OptionalString("fallback_hostname"),
+			Upload:           child.GetChildByTag("upload").Tag == "upload",
 		})
 		if !cag.OK() {
 			return nil, fmt.Errorf("failed to parse media connection host: %+v", ag.Errors)
