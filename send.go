@@ -1028,8 +1028,12 @@ func getButtonTypeFromMessage(msg *waE2E.Message) string {
 		return getButtonTypeFromMessage(msg.ViewOnceMessage.Message)
 	case msg.ViewOnceMessageV2 != nil:
 		return getButtonTypeFromMessage(msg.ViewOnceMessageV2.Message)
+	case msg.ViewOnceMessageV2Extension != nil:
+		return getButtonTypeFromMessage(msg.ViewOnceMessageV2Extension.Message)
 	case msg.EphemeralMessage != nil:
 		return getButtonTypeFromMessage(msg.EphemeralMessage.Message)
+	case msg.DocumentWithCaptionMessage != nil:
+		return getButtonTypeFromMessage(msg.DocumentWithCaptionMessage.Message)
 	case msg.ButtonsMessage != nil:
 		return "buttons"
 	case msg.ButtonsResponseMessage != nil:
@@ -1040,6 +1044,8 @@ func getButtonTypeFromMessage(msg *waE2E.Message) string {
 		return "list_response"
 	case msg.InteractiveResponseMessage != nil:
 		return "interactive_response"
+	case msg.InteractiveMessage != nil:
+		return "interactive"
 	default:
 		return ""
 	}
@@ -1051,8 +1057,12 @@ func getButtonAttributes(msg *waE2E.Message) waBinary.Attrs {
 		return getButtonAttributes(msg.ViewOnceMessage.Message)
 	case msg.ViewOnceMessageV2 != nil:
 		return getButtonAttributes(msg.ViewOnceMessageV2.Message)
+	case msg.ViewOnceMessageV2Extension != nil:
+		return getButtonAttributes(msg.ViewOnceMessageV2Extension.Message)
 	case msg.EphemeralMessage != nil:
 		return getButtonAttributes(msg.EphemeralMessage.Message)
+	case msg.DocumentWithCaptionMessage != nil:
+		return getButtonAttributes(msg.DocumentWithCaptionMessage.Message)
 	case msg.TemplateMessage != nil:
 		return waBinary.Attrs{}
 	case msg.ListMessage != nil:
@@ -1060,8 +1070,75 @@ func getButtonAttributes(msg *waE2E.Message) waBinary.Attrs {
 			"v":    "2",
 			"type": strings.ToLower(waE2E.ListMessage_ListType_name[int32(msg.ListMessage.GetListType())]),
 		}
+	case msg.InteractiveMessage != nil:
+		for _, button := range msg.InteractiveMessage.GetNativeFlowMessage().GetButtons() {
+			switch button.GetName() {
+			case "payment_info", "review_and_pay":
+				return waBinary.Attrs{
+					"v":    "1",
+					"type": "native_flow",
+				}
+			case "send_location":
+				return waBinary.Attrs{
+					"type": "native_flow",
+				}
+			}
+		}
+		return waBinary.Attrs{
+			"type": "native_flow",
+		}
 	default:
 		return waBinary.Attrs{}
+	}
+}
+
+func getButtonContent(msg *waE2E.Message) []waBinary.Node {
+	switch {
+	case msg.ViewOnceMessage != nil:
+		return getButtonContent(msg.ViewOnceMessage.Message)
+	case msg.ViewOnceMessageV2 != nil:
+		return getButtonContent(msg.ViewOnceMessageV2.Message)
+	case msg.ViewOnceMessageV2Extension != nil:
+		return getButtonContent(msg.ViewOnceMessageV2Extension.Message)
+	case msg.EphemeralMessage != nil:
+		return getButtonContent(msg.EphemeralMessage.Message)
+	case msg.DocumentWithCaptionMessage != nil:
+		return getButtonContent(msg.DocumentWithCaptionMessage.Message)
+	case msg.InteractiveMessage != nil:
+		for _, button := range msg.InteractiveMessage.GetNativeFlowMessage().GetButtons() {
+			switch button.GetName() {
+			case "payment_info":
+				return []waBinary.Node{{
+					Tag: "native_flow",
+					Attrs: waBinary.Attrs{
+						"name": "payment_info",
+					},
+				}}
+			case "review_and_pay":
+				return []waBinary.Node{{
+					Tag: "native_flow",
+					Attrs: waBinary.Attrs{
+						"name": "order_details",
+					},
+				}}
+			case "send_location":
+				return []waBinary.Node{{
+					Tag: "native_flow",
+					Attrs: waBinary.Attrs{
+						"name": "location_request_message",
+					},
+				}}
+			}
+		}
+		return []waBinary.Node{{
+			Tag: "native_flow",
+			Attrs: waBinary.Attrs{
+				"v":    "2",
+				"name": "mixed",
+			},
+		}}
+	default:
+		return nil
 	}
 }
 
@@ -1184,12 +1261,16 @@ func (cli *Client) getMessageContent(
 	}
 
 	if buttonType := getButtonTypeFromMessage(message); buttonType != "" {
+		buttonNode := waBinary.Node{
+			Tag:   buttonType,
+			Attrs: getButtonAttributes(message),
+		}
+		if buttonType != "list" {
+			buttonNode.Content = getButtonContent(message)
+		}
 		content = append(content, waBinary.Node{
-			Tag: "biz",
-			Content: []waBinary.Node{{
-				Tag:   buttonType,
-				Attrs: getButtonAttributes(message),
-			}},
+			Tag:     "biz",
+			Content: []waBinary.Node{buttonNode},
 		})
 	}
 	return content
