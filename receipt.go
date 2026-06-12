@@ -64,7 +64,7 @@ func (cli *Client) handleGroupedReceipt(ctx context.Context, partialReceipt even
 	partialReceipt.MessageIDs = []types.MessageID{pag.String("key")}
 	for _, child := range participants.GetChildren() {
 		if child.Tag != "user" {
-			cli.Log.Warnf("Unexpected node in grouped receipt participants: %s", child.XMLString())
+			cli.Log.Warnf("Unexpected node in grouped receipt participants: %s", &child)
 			continue
 		}
 		ag := child.AttrGetter()
@@ -72,7 +72,7 @@ func (cli *Client) handleGroupedReceipt(ctx context.Context, partialReceipt even
 		receipt.Timestamp = ag.UnixTime("t")
 		receipt.MessageSource.Sender = ag.JID("jid")
 		if !ag.OK() {
-			cli.Log.Warnf("Failed to parse user node %s in grouped receipt: %v", child.XMLString(), ag.Error())
+			cli.Log.Warnf("Failed to parse user node %s in grouped receipt: %v", &child, ag.Error())
 			continue
 		}
 		cli.updateOutgoingMessageStatusFromReceipt(ctx, &receipt)
