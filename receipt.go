@@ -22,18 +22,44 @@ import (
 func (cli *Client) handleReceipt(ctx context.Context, node *waBinary.Node) {
 	var cancelled bool
 	defer cli.maybeDeferredAck(ctx, node)(&cancelled)
-	receipt, err := cli.parseReceipt(node)
+	receipt, err := cli.parseReceipt(ctx, node)
 	if err != nil {
 		cli.Log.Warnf("Failed to parse receipt: %v", err)
 	} else if receipt != nil {
 		if receipt.Type == types.ReceiptTypeRetry {
 			go cli.tryHandleRetryReceipt(ctx, receipt, node)
 		}
+		cli.updateOutgoingMessageStatusFromReceipt(ctx, receipt)
 		cancelled = cli.dispatchEvent(receipt)
 	}
 }
 
-func (cli *Client) handleGroupedReceipt(partialReceipt events.Receipt, participants *waBinary.Node) {
+func outgoingMessageStatusFromReceiptType(receiptType types.ReceiptType) (types.OutgoingMessageStatus, bool) {
+	switch receiptType {
+	case types.ReceiptTypeDelivered:
+		return types.OutgoingMessageStatusDelivered, true
+	case types.ReceiptTypeRead, types.ReceiptTypePlayed:
+		return types.OutgoingMessageStatusRead, true
+	default:
+		return "", false
+	}
+}
+
+func (cli *Client) updateOutgoingMessageStatusFromReceipt(ctx context.Context, receipt *events.Receipt) {
+	if cli == nil || cli.Store == nil || cli.Store.MsgStatuses == nil || receipt == nil {
+		return
+	}
+	status, ok := outgoingMessageStatusFromReceiptType(receipt.Type)
+	if !ok || len(receipt.MessageIDs) == 0 || receipt.Sender.IsEmpty() {
+		return
+	}
+	err := cli.Store.MsgStatuses.UpdateOutgoingMessageStatus(ctx, receipt.Chat, receipt.Sender, receipt.MessageIDs, status, receipt.Timestamp)
+	if err != nil {
+		cli.Log.Warnf("Failed to update outgoing message status for receipt from %s in %s: %v", receipt.Sender, receipt.Chat, err)
+	}
+}
+
+func (cli *Client) handleGroupedReceipt(ctx context.Context, partialReceipt events.Receipt, participants *waBinary.Node) {
 	pag := participants.AttrGetter()
 	partialReceipt.MessageIDs = []types.MessageID{pag.String("key")}
 	for _, child := range participants.GetChildren() {
@@ -49,11 +75,12 @@ func (cli *Client) handleGroupedReceipt(partialReceipt events.Receipt, participa
 			cli.Log.Warnf("Failed to parse user node %s in grouped receipt: %v", child.XMLString(), ag.Error())
 			continue
 		}
+		cli.updateOutgoingMessageStatusFromReceipt(ctx, &receipt)
 		cli.dispatchEvent(&receipt)
 	}
 }
 
-func (cli *Client) parseReceipt(node *waBinary.Node) (*events.Receipt, error) {
+func (cli *Client) parseReceipt(ctx context.Context, node *waBinary.Node) (*events.Receipt, error) {
 	ag := node.AttrGetter()
 	source, err := cli.parseMessageSource(node, false)
 	if err != nil {
@@ -71,7 +98,7 @@ func (cli *Client) parseReceipt(node *waBinary.Node) (*events.Receipt, error) {
 			return nil, &ElementMissingError{Tag: "participants", In: "grouped receipt"}
 		}
 		for _, pcp := range participantTags {
-			cli.handleGroupedReceipt(receipt, &pcp)
+			cli.handleGroupedReceipt(ctx, receipt, &pcp)
 		}
 		return nil, nil
 	}

@@ -540,11 +540,11 @@ func (int *DangerousInternalClient) HandleReceipt(ctx context.Context, node *waB
 }
 
 func (int *DangerousInternalClient) HandleGroupedReceipt(partialReceipt events.Receipt, participants *waBinary.Node) {
-	int.c.handleGroupedReceipt(partialReceipt, participants)
+	int.c.handleGroupedReceipt(context.Background(), partialReceipt, participants)
 }
 
 func (int *DangerousInternalClient) ParseReceipt(node *waBinary.Node) (*events.Receipt, error) {
-	return int.c.parseReceipt(node)
+	return int.c.parseReceipt(context.Background(), node)
 }
 
 func (int *DangerousInternalClient) BackgroundIfAsyncAck(fn func()) {

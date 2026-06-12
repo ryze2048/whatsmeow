@@ -33,6 +33,7 @@ import (
 	"go.mau.fi/whatsmeow/proto/waAICommon"
 	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 )
@@ -72,6 +73,39 @@ func GenerateFacebookMessageID() int64 {
 // Deprecated: WhatsApp web has switched to using a hash of the current timestamp, user id and random bytes. Use Client.GenerateMessageID instead.
 func GenerateMessageID() types.MessageID {
 	return WebMessageIDPrefix + strings.ToUpper(hex.EncodeToString(random.Bytes(8)))
+}
+
+func (cli *Client) storeOutgoingMessageStatus(ctx context.Context, chat types.JID, id types.MessageID, timestamp time.Time, recipients []types.JID) {
+	if cli == nil || cli.Store == nil || cli.Store.MsgStatuses == nil || len(recipients) == 0 {
+		return
+	}
+	ownID := cli.getOwnID().ToNonAD()
+	ownLID := cli.getOwnLID().ToNonAD()
+	seen := make(map[types.JID]struct{}, len(recipients))
+	inserts := make([]store.OutgoingMessageStatusInsert, 0, len(recipients))
+	for _, recipient := range recipients {
+		recipient = recipient.ToNonAD()
+		if recipient.IsEmpty() || recipient == ownID || recipient == ownLID {
+			continue
+		}
+		if _, ok := seen[recipient]; ok {
+			continue
+		}
+		seen[recipient] = struct{}{}
+		inserts = append(inserts, store.OutgoingMessageStatusInsert{
+			Chat:      chat,
+			Recipient: recipient,
+			ID:        id,
+			Timestamp: timestamp,
+		})
+	}
+	if len(inserts) == 0 {
+		return
+	}
+	err := cli.Store.MsgStatuses.PutOutgoingMessageStatuses(ctx, inserts)
+	if err != nil {
+		cli.Log.Warnf("Failed to store outgoing message status for %s: %v", id, err)
+	}
 }
 
 type MessageDebugTimings struct {
@@ -460,6 +494,14 @@ func (cli *Client) SendMessage(ctx context.Context, to types.JID, message *waE2E
 			cli.userDevicesCacheLock.Lock()
 			delete(cli.userDevicesCache, to)
 			cli.userDevicesCacheLock.Unlock()
+		}
+	}
+	if err == nil && !req.Peer {
+		switch to.Server {
+		case types.GroupServer, types.BroadcastServer:
+			cli.storeOutgoingMessageStatus(ctx, to, req.ID, resp.Timestamp, groupParticipants)
+		case types.DefaultUserServer, types.BotServer, types.HiddenUserServer:
+			cli.storeOutgoingMessageStatus(ctx, to, req.ID, resp.Timestamp, []types.JID{to})
 		}
 	}
 	return

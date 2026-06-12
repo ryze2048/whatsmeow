@@ -136,6 +136,30 @@ type MsgSecretStore interface {
 	GetMessageSecret(ctx context.Context, chat, sender types.JID, id types.MessageID) ([]byte, types.JID, error)
 }
 
+type OutgoingMessageStatusInsert struct {
+	Chat      types.JID
+	Recipient types.JID
+	ID        types.MessageID
+	Timestamp time.Time
+}
+
+type OutgoingMessageStatus struct {
+	Chat               types.JID
+	Recipient          types.JID
+	ID                 types.MessageID
+	Status             types.OutgoingMessageStatus
+	SentTimestamp      time.Time
+	DeliveredTimestamp time.Time
+	ReadTimestamp      time.Time
+}
+
+type OutgoingMessageStatusStore interface {
+	PutOutgoingMessageStatuses(ctx context.Context, inserts []OutgoingMessageStatusInsert) error
+	UpdateOutgoingMessageStatus(ctx context.Context, chat, recipient types.JID, ids []types.MessageID, status types.OutgoingMessageStatus, timestamp time.Time) error
+	GetOutgoingMessageStatus(ctx context.Context, chat, recipient types.JID, id types.MessageID) (*OutgoingMessageStatus, error)
+	GetOutgoingMessageStatuses(ctx context.Context, chat types.JID, id types.MessageID) ([]OutgoingMessageStatus, error)
+}
+
 type PrivacyToken struct {
 	User            types.JID
 	Token           []byte
@@ -246,6 +270,7 @@ type Device struct {
 	Contacts      ContactStore
 	ChatSettings  ChatSettingsStore
 	MsgSecrets    MsgSecretStore
+	MsgStatuses   OutgoingMessageStatusStore
 	PrivacyTokens PrivacyTokenStore
 	NCTSalt       NCTSaltStore
 	EventBuffer   EventBuffer
@@ -305,6 +330,11 @@ func (device *Device) SetAllStores(store AllSessionSpecificStores) {
 	device.Contacts = store
 	device.ChatSettings = store
 	device.MsgSecrets = store
+	if msgStatuses, ok := store.(OutgoingMessageStatusStore); ok {
+		device.MsgStatuses = msgStatuses
+	} else {
+		device.MsgStatuses = nil
+	}
 	device.PrivacyTokens = store
 	device.NCTSalt = store
 	device.EventBuffer = store
