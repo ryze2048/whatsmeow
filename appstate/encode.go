@@ -260,6 +260,34 @@ func BuildStar(target, sender types.JID, messageID types.MessageID, fromMe, star
 	}
 }
 
+// BuildDeleteMessageForMe builds an app state patch for deleting a message for the current user only.
+func BuildDeleteMessageForMe(target, sender types.JID, messageID types.MessageID, fromMe bool, messageTimestamp time.Time, deleteMedia bool) PatchInfo {
+	isFromMe := "0"
+	if fromMe {
+		isFromMe = "1"
+	}
+	targetJID, senderJID := target.String(), sender.String()
+	if sender.IsEmpty() || fromMe || target.User == sender.User {
+		senderJID = "0"
+	}
+	action := &waSyncAction.DeleteMessageForMeAction{
+		DeleteMedia: proto.Bool(deleteMedia),
+	}
+	if !messageTimestamp.IsZero() {
+		action.MessageTimestamp = proto.Int64(messageTimestamp.Unix())
+	}
+	return PatchInfo{
+		Type: WAPatchRegularHigh,
+		Mutations: []MutationInfo{{
+			Index:   []string{IndexDeleteMessageForMe, targetJID, messageID, isFromMe, senderJID},
+			Version: 3,
+			Value: &waSyncAction.SyncActionValue{
+				DeleteMessageForMeAction: action,
+			},
+		}},
+	}
+}
+
 func (proc *Processor) EncodePatch(ctx context.Context, keyID []byte, state HashState, patchInfo PatchInfo) ([]byte, error) {
 	keys, err := proc.getAppStateKey(ctx, keyID)
 	if err != nil {
