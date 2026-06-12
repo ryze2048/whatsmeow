@@ -53,6 +53,17 @@ type wrappedEventHandler struct {
 	id uint32
 }
 
+type ClientConnectionStatus string
+
+const (
+	// ClientConnectionStatusConnected means the websocket is connected and authenticated.
+	ClientConnectionStatusConnected ClientConnectionStatus = "connected"
+	// ClientConnectionStatusDisconnected means the account is linked, but the websocket is not currently ready.
+	ClientConnectionStatusDisconnected ClientConnectionStatus = "disconnected"
+	// ClientConnectionStatusLoggedOut means the account is no longer linked locally, usually after logout or device removal.
+	ClientConnectionStatusLoggedOut ClientConnectionStatus = "logged_out"
+)
+
 type deviceCache struct {
 	devices []types.JID
 	dhash   string
@@ -648,6 +659,16 @@ func (cli *Client) IsConnected() bool {
 	connected := cli.socket != nil && cli.socket.IsConnected()
 	cli.socketLock.RUnlock()
 	return connected
+}
+
+// GetConnectionStatus returns the current high-level account connection state.
+func (cli *Client) GetConnectionStatus() ClientConnectionStatus {
+	if cli == nil || cli.Store == nil || cli.Store.Deleted || cli.Store.GetJID().IsEmpty() {
+		return ClientConnectionStatusLoggedOut
+	} else if cli.IsConnected() && cli.IsLoggedIn() {
+		return ClientConnectionStatusConnected
+	}
+	return ClientConnectionStatusDisconnected
 }
 
 // Disconnect disconnects from the WhatsApp web websocket.
