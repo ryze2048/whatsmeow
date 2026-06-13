@@ -343,30 +343,20 @@ func (s *SQLStore) GetOrGenPreKeys(ctx context.Context, count uint32) ([]*keys.P
 	s.preKeyLock.Lock()
 	defer s.preKeyLock.Unlock()
 
-	res, err := s.db.Query(ctx, getUnuploadedPreKeysQuery, s.JID, count)
+	newKeys, err := scanPreKey.NewRowIter(s.db.Query(ctx, getUnuploadedPreKeysQuery, s.JID, count)).AsList()
 	if err != nil {
 		return nil, fmt.Errorf("failed to query existing prekeys: %w", err)
 	}
-	newKeys := make([]*keys.PreKey, count)
-	var existingCount uint32
-	for res.Next() {
-		var key *keys.PreKey
-		key, err = scanPreKey(res)
-		if err != nil {
-			return nil, err
-		} else if key != nil {
-			newKeys[existingCount] = key
-			existingCount++
-		}
-	}
 
-	if existingCount < uint32(len(newKeys)) {
+	alreadyGeneratedCount := uint32(len(newKeys))
+	if count > alreadyGeneratedCount {
 		var nextKeyID uint32
 		nextKeyID, err = s.getNextPreKeyID(ctx)
 		if err != nil {
 			return nil, err
 		}
-		for i := existingCount; i < count; i++ {
+		newKeys = slices.Grow(newKeys, int(count)-len(newKeys))[:count]
+		for i := alreadyGeneratedCount; i < count; i++ {
 			newKeys[i], err = s.genOnePreKey(ctx, nextKeyID, false)
 			if err != nil {
 				return nil, fmt.Errorf("failed to generate prekey: %w", err)
@@ -378,7 +368,7 @@ func (s *SQLStore) GetOrGenPreKeys(ctx context.Context, count uint32) ([]*keys.P
 	return newKeys, nil
 }
 
-func scanPreKey(row dbutil.Scannable) (*keys.PreKey, error) {
+var scanPreKey = dbutil.ConvertRowFn[*keys.PreKey](func(row dbutil.Scannable) (*keys.PreKey, error) {
 	var priv []byte
 	var id uint32
 	err := row.Scan(&id, &priv)
@@ -393,7 +383,7 @@ func scanPreKey(row dbutil.Scannable) (*keys.PreKey, error) {
 		KeyPair: *keys.NewKeyPairFromPrivateKey(*(*[32]byte)(priv)),
 		KeyID:   id,
 	}, nil
-}
+})
 
 func (s *SQLStore) GetPreKey(ctx context.Context, id uint32) (*keys.PreKey, error) {
 	return scanPreKey(s.db.QueryRow(ctx, getPreKeyQuery, s.JID, id))
@@ -452,32 +442,25 @@ func (s *SQLStore) PutAppStateSyncKey(ctx context.Context, id []byte, key store.
 	return err
 }
 
-func (s *SQLStore) GetAllAppStateSyncKeys(ctx context.Context) ([]*store.AppStateSyncKey, error) {
-	rows, err := s.db.Query(ctx, getAllAppStateSyncKeysQuery, s.JID)
+var convertAppStateSyncKeyRow = dbutil.ConvertRowFn[*store.AppStateSyncKey](func(rows dbutil.Scannable) (*store.AppStateSyncKey, error) {
+	var item store.AppStateSyncKey
+	err := rows.Scan(&item.Data, &item.Timestamp, &item.Fingerprint)
 	if err != nil {
 		return nil, err
 	}
-	var out []*store.AppStateSyncKey
-	for rows.Next() {
-		var item store.AppStateSyncKey
-		err = rows.Scan(&item.Data, &item.Timestamp, &item.Fingerprint)
-		if err != nil {
-			return nil, err
-		}
-		if len(item.Data) > 0 {
-			out = append(out, &item)
-		}
-	}
-	return out, rows.Close()
+	return &item, nil
+})
+
+func (s *SQLStore) GetAllAppStateSyncKeys(ctx context.Context) ([]*store.AppStateSyncKey, error) {
+	return convertAppStateSyncKeyRow.NewRowIter(s.db.Query(ctx, getAllAppStateSyncKeysQuery, s.JID)).AsList()
 }
 
 func (s *SQLStore) GetAppStateSyncKey(ctx context.Context, id []byte) (*store.AppStateSyncKey, error) {
-	var key store.AppStateSyncKey
-	err := s.db.QueryRow(ctx, getAppStateSyncKeyQuery, s.JID, id).Scan(&key.Data, &key.Timestamp, &key.Fingerprint)
+	key, err := convertAppStateSyncKeyRow(s.db.QueryRow(ctx, getAppStateSyncKeyQuery, s.JID, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
-	return &key, err
+	return key, err
 }
 
 func (s *SQLStore) GetLatestAppStateSyncKeyID(ctx context.Context) ([]byte, error) {
@@ -794,33 +777,41 @@ func (s *SQLStore) GetContact(ctx context.Context, user types.JID) (types.Contac
 	return *info, nil
 }
 
-func (s *SQLStore) GetAllContacts(ctx context.Context) (map[types.JID]types.ContactInfo, error) {
-	s.contactCacheLock.Lock()
-	defer s.contactCacheLock.Unlock()
-	rows, err := s.db.Query(ctx, getAllContactsQuery, s.JID)
+type contactTuple struct {
+	JID  types.JID
+	Info *types.ContactInfo
+}
+
+var convertContactRow = dbutil.ConvertRowFn[*contactTuple](func(rows dbutil.Scannable) (*contactTuple, error) {
+	var jid types.JID
+	var first, full, push, business, redactedPhone sql.NullString
+	err := rows.Scan(&jid, &first, &full, &push, &business, &redactedPhone)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error scanning row: %w", err)
 	}
-	output := make(map[types.JID]types.ContactInfo, len(s.contactCache))
-	for rows.Next() {
-		var jid types.JID
-		var first, full, push, business, redactedPhone sql.NullString
-		err = rows.Scan(&jid, &first, &full, &push, &business, &redactedPhone)
-		if err != nil {
-			return nil, fmt.Errorf("error scanning row: %w", err)
-		}
-		info := types.ContactInfo{
+	return &contactTuple{
+		JID: jid,
+		Info: &types.ContactInfo{
 			Found:         true,
 			FirstName:     first.String,
 			FullName:      full.String,
 			PushName:      push.String,
 			BusinessName:  business.String,
 			RedactedPhone: redactedPhone.String,
-		}
-		output[jid] = info
-		s.contactCache[jid] = &info
-	}
-	return output, nil
+		},
+	}, nil
+})
+
+func (s *SQLStore) GetAllContacts(ctx context.Context) (map[types.JID]types.ContactInfo, error) {
+	s.contactCacheLock.Lock()
+	defer s.contactCacheLock.Unlock()
+	output := make(map[types.JID]types.ContactInfo, len(s.contactCache))
+	err := convertContactRow.NewRowIter(s.db.Query(ctx, getAllContactsQuery, s.JID)).Iter(func(tuple *contactTuple) (bool, error) {
+		output[tuple.JID] = *tuple.Info
+		s.contactCache[tuple.JID] = tuple.Info
+		return true, nil
+	})
+	return output, err
 }
 
 const (
@@ -925,6 +916,195 @@ func (s *SQLStore) GetMessageSecret(ctx context.Context, chat, sender types.JID,
 		err = nil
 	}
 	return
+}
+
+const (
+	putOutgoingMessageStatusQuery = `
+		INSERT INTO whatsmeow_outgoing_message_status (our_jid, chat_jid, recipient_jid, message_id, status, sent_timestamp)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (our_jid, chat_jid, recipient_jid, message_id) DO NOTHING
+	`
+	updateOutgoingMessageStatusQuery = `
+		UPDATE whatsmeow_outgoing_message_status
+		SET
+			status=$5,
+			delivered_timestamp=CASE
+				WHEN $5 IN ('delivered', 'read') THEN COALESCE(delivered_timestamp, $6)
+				ELSE delivered_timestamp
+			END,
+			read_timestamp=CASE
+				WHEN $5='read' THEN COALESCE(read_timestamp, $6)
+				ELSE read_timestamp
+			END
+		WHERE our_jid=$1 AND (chat_jid=$2 OR chat_jid=(
+			CASE
+				WHEN $2 LIKE '%@lid'
+					THEN (SELECT pn || '@s.whatsapp.net' FROM whatsmeow_lid_map WHERE lid=replace($2, '@lid', ''))
+				WHEN $2 LIKE '%@s.whatsapp.net'
+					THEN (SELECT lid || '@lid' FROM whatsmeow_lid_map WHERE pn=replace($2, '@s.whatsapp.net', ''))
+			END
+		)) AND (recipient_jid=$3 OR recipient_jid=(
+			CASE
+				WHEN $3 LIKE '%@lid'
+					THEN (SELECT pn || '@s.whatsapp.net' FROM whatsmeow_lid_map WHERE lid=replace($3, '@lid', ''))
+				WHEN $3 LIKE '%@s.whatsapp.net'
+					THEN (SELECT lid || '@lid' FROM whatsmeow_lid_map WHERE pn=replace($3, '@s.whatsapp.net', ''))
+			END
+		)) AND message_id=$4
+		AND CASE status
+			WHEN 'pending' THEN 0
+			WHEN 'delivered' THEN 1
+			WHEN 'read' THEN 2
+			ELSE -1
+		END <= CASE $5
+			WHEN 'pending' THEN 0
+			WHEN 'delivered' THEN 1
+			WHEN 'read' THEN 2
+			ELSE -1
+		END
+	`
+	getOutgoingMessageStatusQuery = `
+		SELECT chat_jid, recipient_jid, message_id, status, sent_timestamp, delivered_timestamp, read_timestamp
+		FROM whatsmeow_outgoing_message_status
+		WHERE our_jid=$1 AND (chat_jid=$2 OR chat_jid=(
+			CASE
+				WHEN $2 LIKE '%@lid'
+					THEN (SELECT pn || '@s.whatsapp.net' FROM whatsmeow_lid_map WHERE lid=replace($2, '@lid', ''))
+				WHEN $2 LIKE '%@s.whatsapp.net'
+					THEN (SELECT lid || '@lid' FROM whatsmeow_lid_map WHERE pn=replace($2, '@s.whatsapp.net', ''))
+			END
+		)) AND (recipient_jid=$3 OR recipient_jid=(
+			CASE
+				WHEN $3 LIKE '%@lid'
+					THEN (SELECT pn || '@s.whatsapp.net' FROM whatsmeow_lid_map WHERE lid=replace($3, '@lid', ''))
+				WHEN $3 LIKE '%@s.whatsapp.net'
+					THEN (SELECT lid || '@lid' FROM whatsmeow_lid_map WHERE pn=replace($3, '@s.whatsapp.net', ''))
+			END
+		)) AND message_id=$4
+		LIMIT 1
+	`
+	getOutgoingMessageStatusesQuery = `
+		SELECT chat_jid, recipient_jid, message_id, status, sent_timestamp, delivered_timestamp, read_timestamp
+		FROM whatsmeow_outgoing_message_status
+		WHERE our_jid=$1 AND (chat_jid=$2 OR chat_jid=(
+			CASE
+				WHEN $2 LIKE '%@lid'
+					THEN (SELECT pn || '@s.whatsapp.net' FROM whatsmeow_lid_map WHERE lid=replace($2, '@lid', ''))
+				WHEN $2 LIKE '%@s.whatsapp.net'
+					THEN (SELECT lid || '@lid' FROM whatsmeow_lid_map WHERE pn=replace($2, '@s.whatsapp.net', ''))
+			END
+		)) AND message_id=$3
+	`
+)
+
+type outgoingMessageStatusRow struct {
+	Chat               types.JID
+	Recipient          types.JID
+	ID                 types.MessageID
+	Status             types.OutgoingMessageStatus
+	SentTimestamp      int64
+	DeliveredTimestamp sql.NullInt64
+	ReadTimestamp      sql.NullInt64
+}
+
+var outgoingMessageStatusScanner = dbutil.ConvertRowFn[outgoingMessageStatusRow](func(row dbutil.Scannable) (out outgoingMessageStatusRow, err error) {
+	var status string
+	err = row.Scan(&out.Chat, &out.Recipient, &out.ID, &status, &out.SentTimestamp, &out.DeliveredTimestamp, &out.ReadTimestamp)
+	out.Status = types.OutgoingMessageStatus(status)
+	return
+})
+
+func outgoingMessageStatusToStore(row outgoingMessageStatusRow) store.OutgoingMessageStatus {
+	status := store.OutgoingMessageStatus{
+		Chat:          row.Chat,
+		Recipient:     row.Recipient,
+		ID:            row.ID,
+		Status:        row.Status,
+		SentTimestamp: time.UnixMilli(row.SentTimestamp),
+	}
+	if row.DeliveredTimestamp.Valid {
+		status.DeliveredTimestamp = time.UnixMilli(row.DeliveredTimestamp.Int64)
+	}
+	if row.ReadTimestamp.Valid {
+		status.ReadTimestamp = time.UnixMilli(row.ReadTimestamp.Int64)
+	}
+	return status
+}
+
+func outgoingMessageStatusTimestamp(timestamp time.Time) int64 {
+	if timestamp.IsZero() {
+		return time.Now().UnixMilli()
+	}
+	return timestamp.UnixMilli()
+}
+
+func (s *SQLStore) PutOutgoingMessageStatuses(ctx context.Context, inserts []store.OutgoingMessageStatusInsert) error {
+	if len(inserts) == 0 {
+		return nil
+	}
+	return s.db.DoTxn(ctx, nil, func(ctx context.Context) error {
+		for _, insert := range inserts {
+			_, err := s.db.Exec(
+				ctx,
+				putOutgoingMessageStatusQuery,
+				s.JID,
+				insert.Chat.ToNonAD(),
+				insert.Recipient.ToNonAD(),
+				insert.ID,
+				types.OutgoingMessageStatusPending,
+				outgoingMessageStatusTimestamp(insert.Timestamp),
+			)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (s *SQLStore) UpdateOutgoingMessageStatus(ctx context.Context, chat, recipient types.JID, ids []types.MessageID, status types.OutgoingMessageStatus, timestamp time.Time) error {
+	if len(ids) == 0 || recipient.IsEmpty() {
+		return nil
+	}
+	return s.db.DoTxn(ctx, nil, func(ctx context.Context) error {
+		for _, id := range ids {
+			_, err := s.db.Exec(
+				ctx,
+				updateOutgoingMessageStatusQuery,
+				s.JID,
+				chat.ToNonAD(),
+				recipient.ToNonAD(),
+				id,
+				status,
+				outgoingMessageStatusTimestamp(timestamp),
+			)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (s *SQLStore) GetOutgoingMessageStatus(ctx context.Context, chat, recipient types.JID, id types.MessageID) (*store.OutgoingMessageStatus, error) {
+	row, err := outgoingMessageStatusScanner(s.db.QueryRow(ctx, getOutgoingMessageStatusQuery, s.JID, chat.ToNonAD(), recipient.ToNonAD(), id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	status := outgoingMessageStatusToStore(row)
+	return &status, nil
+}
+
+func (s *SQLStore) GetOutgoingMessageStatuses(ctx context.Context, chat types.JID, id types.MessageID) ([]store.OutgoingMessageStatus, error) {
+	rows, err := s.db.Query(ctx, getOutgoingMessageStatusesQuery, s.JID, chat.ToNonAD(), id)
+	statuses := make([]store.OutgoingMessageStatus, 0)
+	err = outgoingMessageStatusScanner.NewRowIter(rows, err).Iter(func(row outgoingMessageStatusRow) (bool, error) {
+		statuses = append(statuses, outgoingMessageStatusToStore(row))
+		return true, nil
+	})
+	return statuses, err
 }
 
 const (

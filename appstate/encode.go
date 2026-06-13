@@ -282,18 +282,22 @@ func BuildStar(target, sender types.JID, messageID types.MessageID, fromMe, star
 	}
 }
 
-// BuildDeleteMessageForMe builds an app state patch for deleting a message only from the current account.
+// BuildDeleteMessageForMe builds an app state patch for deleting a message from the current user's chat history.
 func BuildDeleteMessageForMe(target, sender types.JID, messageID types.MessageID, fromMe bool, messageTimestamp time.Time, deleteMedia bool) PatchInfo {
 	isFromMe := "0"
 	if fromMe {
 		isFromMe = "1"
 	}
 	targetJID, senderJID := target.String(), sender.String()
-	if sender.IsEmpty() || target.User == sender.User {
+	if sender.IsEmpty() || fromMe || target.User == sender.User {
 		senderJID = "0"
 	}
 	if messageTimestamp.IsZero() {
 		messageTimestamp = time.Now()
+	}
+	action := &waSyncAction.DeleteMessageForMeAction{
+		DeleteMedia:      proto.Bool(deleteMedia),
+		MessageTimestamp: proto.Int64(messageTimestamp.Unix()),
 	}
 	return PatchInfo{
 		Type: WAPatchRegularHigh,
@@ -301,10 +305,7 @@ func BuildDeleteMessageForMe(target, sender types.JID, messageID types.MessageID
 			Index:   []string{IndexDeleteMessageForMe, targetJID, messageID, isFromMe, senderJID},
 			Version: 3,
 			Value: &waSyncAction.SyncActionValue{
-				DeleteMessageForMeAction: &waSyncAction.DeleteMessageForMeAction{
-					DeleteMedia:      proto.Bool(deleteMedia),
-					MessageTimestamp: proto.Int64(messageTimestamp.Unix()),
-				},
+				DeleteMessageForMeAction: action,
 			},
 		}},
 	}

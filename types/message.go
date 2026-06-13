@@ -23,6 +23,18 @@ type BroadcastRecipient struct {
 	PN  JID
 }
 
+// OutgoingMessageStatus is the delivery/read state of a message sent by this client.
+type OutgoingMessageStatus string
+
+const (
+	// OutgoingMessageStatusPending means the server accepted the message, but no delivery receipt has been received yet.
+	OutgoingMessageStatusPending OutgoingMessageStatus = "pending"
+	// OutgoingMessageStatusDelivered means the message was delivered to the recipient's device.
+	OutgoingMessageStatusDelivered OutgoingMessageStatus = "delivered"
+	// OutgoingMessageStatusRead means the recipient opened the chat and saw the message.
+	OutgoingMessageStatusRead OutgoingMessageStatus = "read"
+)
+
 // MessageSource contains basic sender and chat information about a message.
 type MessageSource struct {
 	Chat     JID  // The chat where the message was sent.

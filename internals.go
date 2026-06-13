@@ -199,8 +199,8 @@ func (int *DangerousInternalClient) HandleConnectSuccess(ctx context.Context, no
 	int.c.handleConnectSuccess(ctx, node)
 }
 
-func (int *DangerousInternalClient) DownloadAndDecrypt(ctx context.Context, url string, mediaKey []byte, appInfo MediaType, fileLength int, fileEncSHA256, fileSHA256 []byte) (data []byte, err error) {
-	return int.c.downloadAndDecrypt(ctx, url, mediaKey, appInfo, fileLength, fileEncSHA256, fileSHA256)
+func (int *DangerousInternalClient) DownloadAndDecrypt(ctx context.Context, url string, mediaKey []byte, appInfo MediaType, fileEncSHA256, fileSHA256 []byte) (data []byte, err error) {
+	return int.c.downloadAndDecrypt(ctx, url, mediaKey, appInfo, fileEncSHA256, fileSHA256)
 }
 
 func (int *DangerousInternalClient) DownloadPossiblyEncryptedMediaWithRetries(ctx context.Context, url string, checksum []byte) (file, mac []byte, err error) {
@@ -219,8 +219,8 @@ func (int *DangerousInternalClient) DownloadEncryptedMedia(ctx context.Context, 
 	return int.c.downloadEncryptedMedia(ctx, url, checksum)
 }
 
-func (int *DangerousInternalClient) DownloadAndDecryptToFile(ctx context.Context, url string, mediaKey []byte, appInfo MediaType, fileLength int, fileEncSHA256, fileSHA256 []byte, file File) error {
-	return int.c.downloadAndDecryptToFile(ctx, url, mediaKey, appInfo, fileLength, fileEncSHA256, fileSHA256, file)
+func (int *DangerousInternalClient) DownloadAndDecryptToFile(ctx context.Context, url string, mediaKey []byte, appInfo MediaType, fileEncSHA256, fileSHA256 []byte, file File) error {
+	return int.c.downloadAndDecryptToFile(ctx, url, mediaKey, appInfo, fileEncSHA256, fileSHA256, file)
 }
 
 func (int *DangerousInternalClient) DownloadPossiblyEncryptedMediaWithRetriesToFile(ctx context.Context, url string, checksum []byte, file File) (mac []byte, err error) {
@@ -540,11 +540,11 @@ func (int *DangerousInternalClient) HandleReceipt(ctx context.Context, node *waB
 }
 
 func (int *DangerousInternalClient) HandleGroupedReceipt(partialReceipt events.Receipt, participants *waBinary.Node) {
-	int.c.handleGroupedReceipt(partialReceipt, participants)
+	int.c.handleGroupedReceipt(context.Background(), partialReceipt, participants)
 }
 
 func (int *DangerousInternalClient) ParseReceipt(node *waBinary.Node) (*events.Receipt, error) {
-	return int.c.parseReceipt(node)
+	return int.c.parseReceipt(context.Background(), node)
 }
 
 func (int *DangerousInternalClient) BackgroundIfAsyncAck(fn func()) {
