@@ -3,12 +3,18 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -27,7 +33,6 @@ import (
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
 	waBinary "go.mau.fi/whatsmeow/binary"
-	"go.mau.fi/whatsmeow/messagebuilder"
 	"go.mau.fi/whatsmeow/proto/waAdv"
 	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/proto/waSyncAction"
@@ -1140,7 +1145,16 @@ func decodeBase64String(input string) ([]byte, error) {
 	return nil, errors.New("invalid base64 string")
 }
 
-type smokeMessageOptions = messagebuilder.Options
+type smokeMessageOptions struct {
+	Kind           string
+	Text           string
+	MediaPath      string
+	PreviewTitle   string
+	PreviewBody    string
+	PreviewURL     string
+	PreviewButton  string
+	ExternalAction bool
+}
 
 func attemptConnect(timeout, transportWait, sendTimeout, postSendWait, controlDelay, deleteDelay time.Duration, connectRetries int, connectRetryWait time.Duration, debug bool, device *store.Device, myAppStateKeyID []byte, proxyAddr, mediaProxyAddr string, mediaDirect bool, sendTo string, msgOpts smokeMessageOptions, controlMessage string, deleteForEveryone, deleteForMe, deleteChatForMe bool, revokeMessageID, deleteForMeID string, deleteForMeTS int64, deleteForMeFromMe, deleteMediaForMe, deleteChatMedia bool, addContact bool, addContacts, addContactMode string, addContactBatch int, addContactPause time.Duration, contactName string, forceLIDSend bool, lidDBMigrated bool, appStateKeyWait time.Duration, recoverKeys bool) error {
 	connCtx, cancelConn := context.WithCancel(context.Background())
@@ -1481,7 +1495,45 @@ func sendMessageWithReconnect(ctx context.Context, client *whatsmeow.Client, tar
 }
 
 func additionalNodesForMessage(kind string) (*[]waBinary.Node, error) {
-	return messagebuilder.AdditionalNodesForKind(kind)
+	if kind != "native-flow-url" {
+		return nil, nil
+	}
+	decisionID, err := secureRandomBytes(20)
+	if err != nil {
+		return nil, fmt.Errorf("generate native flow decision ID: %w", err)
+	}
+	nodes := []waBinary.Node{{
+		Tag:   "biz",
+		Attrs: waBinary.Attrs{},
+		Content: []waBinary.Node{
+			{
+				Tag:   "interactive",
+				Attrs: waBinary.Attrs{"type": "native_flow", "v": "1"},
+				Content: []waBinary.Node{{
+					Tag:   "native_flow",
+					Attrs: waBinary.Attrs{"v": "9", "name": "mixed"},
+				}},
+			},
+			{
+				Tag: "quality_control",
+				Attrs: waBinary.Attrs{
+					"decision_id": hex.EncodeToString(decisionID),
+					"source_type": "third_party",
+				},
+				Content: []waBinary.Node{{
+					Tag:   "decision_source",
+					Attrs: waBinary.Attrs{"value": "df"},
+				}},
+			},
+		},
+	}}
+	return &nodes, nil
+}
+
+func secureRandomBytes(size int) ([]byte, error) {
+	data := make([]byte, size)
+	_, err := rand.Read(data)
+	return data, err
 }
 
 func isRetryableSendDisconnect(err error) bool {
@@ -1705,7 +1757,442 @@ func setDirectMediaTransport(client *whatsmeow.Client, timeout time.Duration) {
 }
 
 func buildSmokeMessage(ctx context.Context, client *whatsmeow.Client, opts smokeMessageOptions) (*waE2E.Message, error) {
-	return messagebuilder.BuildMessage(ctx, client, opts)
+	if strings.TrimSpace(opts.Text) == "" {
+		opts.Text = "whatsmeow imported creds smoke test"
+	}
+	switch opts.Kind {
+	case "text":
+		return &waE2E.Message{Conversation: proto.String(opts.Text)}, nil
+	case "image":
+		return buildImageMessage(ctx, client, opts)
+	case "external-ad":
+		return buildExternalAdMessage(opts)
+	case "link-preview":
+		return buildLinkPreviewMessage(ctx, client, opts)
+	case "interactive-url":
+		return buildInteractiveURLMessage(ctx, client, opts)
+	case "native-flow-url":
+		return buildNativeFlowURLMessage(ctx, client, opts)
+	case "template-url":
+		return buildTemplateURLMessage(ctx, client, opts)
+	case "buttons-url":
+		return buildButtonsURLMessage(ctx, client, opts)
+	default:
+		return nil, fmt.Errorf("unknown message kind %q", opts.Kind)
+	}
+}
+
+func buildImageMessage(ctx context.Context, client *whatsmeow.Client, opts smokeMessageOptions) (*waE2E.Message, error) {
+	if opts.MediaPath == "" {
+		return nil, errors.New("-message-kind image requires -media-path")
+	}
+	imageMessage, err := buildUploadedImageMessage(ctx, client, opts.MediaPath, opts.Text)
+	if err != nil {
+		return nil, err
+	}
+	return &waE2E.Message{ImageMessage: imageMessage}, nil
+}
+
+func buildUploadedImageMessage(ctx context.Context, client *whatsmeow.Client, path, caption string) (*waE2E.ImageMessage, error) {
+	data, mimetype, err := readMediaFile(path)
+	if err != nil {
+		return nil, err
+	}
+	upload, err := client.Upload(ctx, data, whatsmeow.MediaImage)
+	if err != nil {
+		return nil, fmt.Errorf("upload image media: %w", err)
+	}
+	width, height := imageDimensions(data)
+	imageMessage := &waE2E.ImageMessage{
+		Mimetype:          proto.String(mimetype),
+		URL:               proto.String(upload.URL),
+		DirectPath:        proto.String(upload.DirectPath),
+		MediaKey:          upload.MediaKey,
+		FileEncSHA256:     upload.FileEncSHA256,
+		FileSHA256:        upload.FileSHA256,
+		FileLength:        proto.Uint64(upload.FileLength),
+		MediaKeyTimestamp: proto.Int64(time.Now().Unix()),
+		JPEGThumbnail:     thumbnailOrNil(data, mimetype),
+	}
+	if strings.TrimSpace(caption) != "" {
+		imageMessage.Caption = proto.String(caption)
+	}
+	if width > 0 {
+		imageMessage.Width = proto.Uint32(width)
+	}
+	if height > 0 {
+		imageMessage.Height = proto.Uint32(height)
+	}
+	imageMessage.ViewOnce = proto.Bool(false)
+	imageMessage.ContextInfo = &waE2E.ContextInfo{}
+	return imageMessage, nil
+}
+
+func buildInteractiveURLMessage(ctx context.Context, client *whatsmeow.Client, opts smokeMessageOptions) (*waE2E.Message, error) {
+	_, params, err := nativeFlowURLButtonParams(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	header := &waE2E.InteractiveMessage_Header{
+		HasMediaAttachment: proto.Bool(false),
+	}
+	if opts.MediaPath != "" {
+		imageMessage, err := buildUploadedImageMessage(ctx, client, opts.MediaPath, "")
+		if err != nil {
+			return nil, err
+		}
+		// Match the known working raw-protocol payload: interactive header media
+		// omits the thumbnail and media key timestamp fields.
+		imageMessage.JPEGThumbnail = nil
+		imageMessage.MediaKeyTimestamp = nil
+		header.Media = &waE2E.InteractiveMessage_Header_ImageMessage{ImageMessage: imageMessage}
+		header.HasMediaAttachment = proto.Bool(true)
+	}
+
+	interactive := &waE2E.InteractiveMessage{
+		Header: header,
+		Body:   &waE2E.InteractiveMessage_Body{Text: proto.String(urlCardText(opts))},
+		InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
+			NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
+				Buttons: []*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{{
+					Name:             proto.String("cta_url"),
+					ButtonParamsJSON: proto.String(params),
+				}},
+				MessageVersion: proto.Int32(0),
+			},
+		},
+		ContextInfo: &waE2E.ContextInfo{},
+	}
+	return &waE2E.Message{
+		ViewOnceMessage: &waE2E.FutureProofMessage{
+			Message: &waE2E.Message{
+				InteractiveMessage: interactive,
+			},
+		},
+	}, nil
+}
+
+func buildNativeFlowURLMessage(ctx context.Context, client *whatsmeow.Client, opts smokeMessageOptions) (*waE2E.Message, error) {
+	_, params, err := nativeFlowURLButtonParams(opts)
+	if err != nil {
+		return nil, err
+	}
+	messageSecret, err := secureRandomBytes(32)
+	if err != nil {
+		return nil, fmt.Errorf("generate native flow message secret: %w", err)
+	}
+
+	header := &waE2E.InteractiveMessage_Header{
+		Title:              proto.String(strings.TrimSpace(opts.PreviewTitle)),
+		HasMediaAttachment: proto.Bool(false),
+	}
+	if opts.MediaPath != "" {
+		imageMessage, err := buildUploadedImageMessage(ctx, client, opts.MediaPath, "")
+		if err != nil {
+			return nil, err
+		}
+		header.Media = &waE2E.InteractiveMessage_Header_ImageMessage{ImageMessage: imageMessage}
+		header.HasMediaAttachment = proto.Bool(true)
+	}
+
+	body := strings.TrimSpace(opts.PreviewBody)
+	if body == "" {
+		body = strings.TrimSpace(opts.Text)
+	}
+	interactive := &waE2E.InteractiveMessage{
+		Header: header,
+		Body:   &waE2E.InteractiveMessage_Body{Text: proto.String(body)},
+		InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
+			NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
+				Buttons: []*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{{
+					Name:             proto.String("cta_url"),
+					ButtonParamsJSON: proto.String(params),
+				}},
+			},
+		},
+	}
+	return &waE2E.Message{
+		ViewOnceMessage: &waE2E.FutureProofMessage{
+			Message: &waE2E.Message{
+				MessageContextInfo: &waE2E.MessageContextInfo{
+					DeviceListMetadata:        &waE2E.DeviceListMetadata{},
+					DeviceListMetadataVersion: proto.Int32(2),
+					MessageSecret:             messageSecret,
+				},
+				InteractiveMessage: interactive,
+			},
+		},
+	}, nil
+}
+
+func buildTemplateURLMessage(ctx context.Context, client *whatsmeow.Client, opts smokeMessageOptions) (*waE2E.Message, error) {
+	button, _, err := nativeFlowURLButtonParams(opts)
+	if err != nil {
+		return nil, err
+	}
+	hydrated := &waE2E.TemplateMessage_HydratedFourRowTemplate{
+		HydratedContentText: proto.String(urlCardText(opts)),
+		TemplateID:          proto.String("whatsmeow-url-template"),
+		HydratedButtons: []*waE2E.HydratedTemplateButton{{
+			HydratedButton: &waE2E.HydratedTemplateButton_UrlButton{
+				UrlButton: &waE2E.HydratedTemplateButton_HydratedURLButton{
+					DisplayText: proto.String(button),
+					URL:         proto.String(strings.TrimSpace(opts.PreviewURL)),
+				},
+			},
+			Index: proto.Uint32(1),
+		}},
+	}
+	if opts.MediaPath != "" {
+		imageMessage, err := buildUploadedImageMessage(ctx, client, opts.MediaPath, "")
+		if err != nil {
+			return nil, err
+		}
+		hydrated.Title = &waE2E.TemplateMessage_HydratedFourRowTemplate_ImageMessage{
+			ImageMessage: imageMessage,
+		}
+	} else if title := strings.TrimSpace(opts.PreviewTitle); title != "" {
+		hydrated.Title = &waE2E.TemplateMessage_HydratedFourRowTemplate_HydratedTitleText{
+			HydratedTitleText: title,
+		}
+	}
+	return &waE2E.Message{
+		ViewOnceMessage: &waE2E.FutureProofMessage{
+			Message: &waE2E.Message{
+				TemplateMessage: &waE2E.TemplateMessage{
+					HydratedTemplate: hydrated,
+				},
+			},
+		},
+	}, nil
+}
+
+func urlCardText(opts smokeMessageOptions) string {
+	body := strings.TrimSpace(opts.PreviewBody)
+	if body == "" {
+		body = strings.TrimSpace(opts.Text)
+	}
+	title := strings.TrimSpace(opts.PreviewTitle)
+	if title == "" {
+		return body
+	}
+	if body == "" || body == title {
+		return "*" + title + "*"
+	}
+	return "*" + title + "*\n" + body
+}
+
+func buildButtonsURLMessage(ctx context.Context, client *whatsmeow.Client, opts smokeMessageOptions) (*waE2E.Message, error) {
+	body := strings.TrimSpace(opts.PreviewBody)
+	if body == "" {
+		body = opts.Text
+	}
+	title := strings.TrimSpace(opts.PreviewTitle)
+	if title == "" {
+		title = "Link"
+	}
+	button, params, err := nativeFlowURLButtonParams(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	buttonType := waE2E.ButtonsMessage_Button_NATIVE_FLOW
+	headerType := waE2E.ButtonsMessage_TEXT
+	buttonsMessage := &waE2E.ButtonsMessage{
+		Header:      &waE2E.ButtonsMessage_Text{Text: title},
+		ContentText: proto.String(body),
+		Buttons: []*waE2E.ButtonsMessage_Button{{
+			ButtonID: proto.String("cta_url"),
+			ButtonText: &waE2E.ButtonsMessage_Button_ButtonText{
+				DisplayText: proto.String(button),
+			},
+			Type: &buttonType,
+			NativeFlowInfo: &waE2E.ButtonsMessage_Button_NativeFlowInfo{
+				Name:       proto.String("cta_url"),
+				ParamsJSON: proto.String(params),
+			},
+		}},
+		HeaderType: &headerType,
+	}
+	if opts.MediaPath != "" {
+		imageMessage, err := buildUploadedImageMessage(ctx, client, opts.MediaPath, "")
+		if err != nil {
+			return nil, err
+		}
+		headerType = waE2E.ButtonsMessage_IMAGE
+		buttonsMessage.Header = &waE2E.ButtonsMessage_ImageMessage{ImageMessage: imageMessage}
+		buttonsMessage.HeaderType = &headerType
+	}
+	return &waE2E.Message{ButtonsMessage: buttonsMessage}, nil
+}
+
+func nativeFlowURLButtonParams(opts smokeMessageOptions) (string, string, error) {
+	button := strings.TrimSpace(opts.PreviewButton)
+	if button == "" {
+		button = "Open"
+	}
+	previewURL := strings.TrimSpace(opts.PreviewURL)
+	if previewURL == "" {
+		return "", "", errors.New("interactive URL messages require -preview-url")
+	}
+	params, err := json.Marshal(map[string]string{
+		"display_text": button,
+		"url":          previewURL,
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("marshal native flow URL params: %w", err)
+	}
+	return button, string(params), nil
+}
+
+func buildExternalAdMessage(opts smokeMessageOptions) (*waE2E.Message, error) {
+	thumbnail, err := readOptionalThumbnail(opts.MediaPath)
+	if err != nil {
+		return nil, err
+	}
+	body := strings.TrimSpace(opts.PreviewBody)
+	if body == "" {
+		body = opts.Text
+	}
+	mediaType := waE2E.ContextInfo_ExternalAdReplyInfo_IMAGE
+	externalAd := &waE2E.ContextInfo_ExternalAdReplyInfo{
+		Title:                 proto.String(opts.PreviewTitle),
+		Body:                  proto.String(body),
+		MediaType:             &mediaType,
+		Thumbnail:             thumbnail,
+		SourceURL:             proto.String(opts.PreviewURL),
+		MediaURL:              proto.String(opts.PreviewURL),
+		RenderLargerThumbnail: proto.Bool(true),
+		ShowAdAttribution:     proto.Bool(false),
+	}
+	contextInfo := &waE2E.ContextInfo{
+		ExternalAdReply: externalAd,
+	}
+	if opts.ExternalAction {
+		adType := waE2E.ContextInfo_ExternalAdReplyInfo_CTWA
+		externalAd.ContainsAutoReply = proto.Bool(true)
+		externalAd.AdType = &adType
+		externalAd.CtaPayload = proto.String(opts.PreviewButton)
+		contextInfo.ActionLink = &waE2E.ActionLink{
+			URL:         proto.String(opts.PreviewURL),
+			ButtonTitle: proto.String(opts.PreviewButton),
+		}
+	}
+	return &waE2E.Message{
+		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Text:        proto.String(opts.Text),
+			ContextInfo: contextInfo,
+		},
+	}, nil
+}
+
+func buildLinkPreviewMessage(ctx context.Context, client *whatsmeow.Client, opts smokeMessageOptions) (*waE2E.Message, error) {
+	thumbnail, err := prepareLinkPreviewThumbnail(ctx, client, opts.MediaPath)
+	if err != nil {
+		return nil, err
+	}
+	body := strings.TrimSpace(opts.PreviewBody)
+	if body == "" {
+		body = opts.Text
+	}
+	previewType := waE2E.ExtendedTextMessage_NONE
+	forwardingScore := uint32(1)
+	extended := &waE2E.ExtendedTextMessage{
+		Text:        proto.String(opts.Text),
+		MatchedText: proto.String(opts.PreviewURL),
+		Title:       proto.String(opts.PreviewTitle),
+		Description: proto.String(body),
+		PreviewType: &previewType,
+		ContextInfo: &waE2E.ContextInfo{
+			ForwardingScore: proto.Uint32(forwardingScore),
+			IsForwarded:     proto.Bool(true),
+		},
+	}
+	if thumbnail != nil {
+		extended.JPEGThumbnail = thumbnail.Inline
+		extended.ThumbnailDirectPath = proto.String(thumbnail.Upload.DirectPath)
+		extended.MediaKey = thumbnail.Upload.MediaKey
+		extended.MediaKeyTimestamp = proto.Int64(time.Now().Unix())
+		extended.ThumbnailSHA256 = thumbnail.Upload.FileSHA256
+		extended.ThumbnailEncSHA256 = thumbnail.Upload.FileEncSHA256
+		if thumbnail.Width > 0 {
+			extended.ThumbnailWidth = proto.Uint32(thumbnail.Width)
+		}
+		if thumbnail.Height > 0 {
+			extended.ThumbnailHeight = proto.Uint32(thumbnail.Height)
+		}
+	}
+	return &waE2E.Message{ExtendedTextMessage: extended}, nil
+}
+
+func readOptionalThumbnail(path string) ([]byte, error) {
+	if path == "" {
+		return nil, nil
+	}
+	data, mimetype, err := readMediaFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return thumbnailOrNil(data, mimetype), nil
+}
+
+type linkPreviewThumbnail struct {
+	Inline []byte
+	Upload whatsmeow.UploadResponse
+	Width  uint32
+	Height uint32
+}
+
+func prepareLinkPreviewThumbnail(ctx context.Context, client *whatsmeow.Client, path string) (*linkPreviewThumbnail, error) {
+	if path == "" {
+		return nil, nil
+	}
+	data, mimetype, err := readMediaFile(path)
+	if err != nil {
+		return nil, err
+	}
+	upload, err := client.Upload(ctx, data, whatsmeow.MediaLinkThumbnail)
+	if err != nil {
+		return nil, fmt.Errorf("upload link preview thumbnail: %w", err)
+	}
+	width, height := imageDimensions(data)
+	return &linkPreviewThumbnail{
+		Inline: thumbnailOrNil(data, mimetype),
+		Upload: upload,
+		Width:  width,
+		Height: height,
+	}, nil
+}
+
+func imageDimensions(data []byte) (uint32, uint32) {
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
+		return 0, 0
+	}
+	return uint32(cfg.Width), uint32(cfg.Height)
+}
+
+func readMediaFile(path string) ([]byte, string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, "", fmt.Errorf("read media path: %w", err)
+	}
+	mimetype := mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
+	if mimetype == "" {
+		mimetype = http.DetectContentType(data[:min(len(data), 512)])
+	}
+	if mimetype == "" {
+		mimetype = "application/octet-stream"
+	}
+	return data, mimetype, nil
+}
+
+func thumbnailOrNil(data []byte, mimetype string) []byte {
+	if strings.HasPrefix(mimetype, "image/jpeg") {
+		return data
+	}
+	return nil
 }
 
 func addContactBeforeSend(ctx context.Context, client *whatsmeow.Client, device *store.Device, target types.JID, contactName, mode string, myAppStateKeyID []byte, appStateKeyWait time.Duration) error {

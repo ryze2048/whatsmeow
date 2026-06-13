@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -227,6 +228,27 @@ func BuildSettingPushName(pushName string) PatchInfo {
 		Mutations: []MutationInfo{
 			newSettingPushNameMutation(pushName),
 		},
+	}
+}
+
+// BuildContact builds an app state patch for adding or updating a contact.
+func BuildContact(target types.JID, fullName string) PatchInfo {
+	fullName = strings.TrimSpace(fullName)
+	if fullName == "" {
+		fullName = target.User
+	}
+	return PatchInfo{
+		Type: WAPatchCriticalUnblockLow,
+		Mutations: []MutationInfo{{
+			Index:   []string{IndexContact, target.String()},
+			Version: 2,
+			Value: &waSyncAction.SyncActionValue{
+				ContactAction: &waSyncAction.ContactAction{
+					FullName:                 proto.String(fullName),
+					SaveOnPrimaryAddressbook: proto.Bool(true),
+				},
+			},
+		}},
 	}
 }
 

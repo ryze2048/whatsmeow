@@ -206,13 +206,46 @@ const (
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 		ON CONFLICT (jid) DO UPDATE
 			SET lid=excluded.lid,
+				registration_id=excluded.registration_id,
+				noise_key=excluded.noise_key,
+				identity_key=excluded.identity_key,
+				signed_pre_key=excluded.signed_pre_key,
+				signed_pre_key_id=excluded.signed_pre_key_id,
+				signed_pre_key_sig=excluded.signed_pre_key_sig,
+				adv_key=excluded.adv_key,
+				adv_details=excluded.adv_details,
+				adv_account_sig=excluded.adv_account_sig,
+				adv_account_sig_key=excluded.adv_account_sig_key,
+				adv_device_sig=excluded.adv_device_sig,
 				platform=excluded.platform,
 				business_name=excluded.business_name,
 				push_name=excluded.push_name,
+				facebook_uuid=excluded.facebook_uuid,
 				lid_migration_ts=excluded.lid_migration_ts
 	`
 	deleteDeviceQuery = `DELETE FROM whatsmeow_device WHERE jid=$1`
 )
+
+var resetDeviceStateQueries = []string{
+	`DELETE FROM whatsmeow_identity_keys WHERE our_jid=$1`,
+	`DELETE FROM whatsmeow_sessions WHERE our_jid=$1`,
+	`DELETE FROM whatsmeow_sender_keys WHERE our_jid=$1`,
+	`DELETE FROM whatsmeow_pre_keys WHERE jid=$1`,
+	`DELETE FROM whatsmeow_app_state_mutation_macs WHERE jid=$1`,
+	`DELETE FROM whatsmeow_app_state_version WHERE jid=$1`,
+	`DELETE FROM whatsmeow_message_secrets WHERE our_jid=$1`,
+	`DELETE FROM whatsmeow_event_buffer WHERE our_jid=$1`,
+	`DELETE FROM whatsmeow_retry_buffer WHERE our_jid=$1`,
+	`DELETE FROM whatsmeow_nct_salt WHERE our_jid=$1`,
+	`DELETE FROM whatsmeow_privacy_tokens WHERE our_jid=$1`,
+}
+
+var resetDeviceContactQueries = []string{
+	`DELETE FROM whatsmeow_contacts WHERE our_jid=$1`,
+	`DELETE FROM whatsmeow_chat_settings WHERE our_jid=$1`,
+}
+
+const resetDeviceAppStateKeysQuery = `DELETE FROM whatsmeow_app_state_sync_keys WHERE jid=$1`
 
 // NewDevice creates a new device in this database.
 //
@@ -261,6 +294,34 @@ func (c *Container) PutDevice(ctx context.Context, device *store.Device) error {
 		c.initializeDevice(device)
 	}
 	return err
+}
+
+// ResetDeviceState clears state that can become invalid when a JID is
+// re-imported with different device identity material.
+func (c *Container) ResetDeviceState(ctx context.Context, jid types.JID, opts store.DeviceStateResetOptions) error {
+	if jid.IsEmpty() {
+		return ErrDeviceIDMustBeSet
+	}
+	return c.db.DoTxn(ctx, nil, func(ctx context.Context) error {
+		for _, query := range resetDeviceStateQueries {
+			if _, err := c.db.Exec(ctx, query, jid); err != nil {
+				return err
+			}
+		}
+		if !opts.PreserveContacts {
+			for _, query := range resetDeviceContactQueries {
+				if _, err := c.db.Exec(ctx, query, jid); err != nil {
+					return err
+				}
+			}
+		}
+		if !opts.PreserveAppStateSyncKeys {
+			if _, err := c.db.Exec(ctx, resetDeviceAppStateKeysQuery, jid); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (c *Container) initializeDevice(device *store.Device) {

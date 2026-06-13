@@ -19,6 +19,7 @@ import (
 
 	"go.mau.fi/whatsmeow/appstate"
 	waBinary "go.mau.fi/whatsmeow/binary"
+	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/proto/waServerSync"
 	"go.mau.fi/whatsmeow/store"
@@ -508,6 +509,143 @@ func (cli *Client) requestAppStateKeys(ctx context.Context, rawKeyIDs [][]byte) 
 //	cli.SendAppState(ctx, appstate.BuildMute(targetJID, true, 24 * time.Hour))
 func (cli *Client) SendAppState(ctx context.Context, patch appstate.PatchInfo) error {
 	return cli.sendAppState(ctx, patch, true)
+}
+
+// AppStateKeyCount returns the number of app-state sync keys currently stored for this device.
+func (cli *Client) AppStateKeyCount(ctx context.Context) (int, error) {
+	if cli == nil {
+		return 0, ErrClientIsNil
+	}
+	keys, err := cli.Store.AppStateKeys.GetAllAppStateSyncKeys(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return len(keys), nil
+}
+
+// RequestAppStateKey asks the user's other linked devices to share the given app-state sync key.
+func (cli *Client) RequestAppStateKey(ctx context.Context, keyID []byte) error {
+	if cli == nil {
+		return ErrClientIsNil
+	}
+	if len(keyID) == 0 {
+		return errors.New("app-state key ID is empty")
+	}
+	_, err := cli.SendPeerMessage(ctx, &waE2E.Message{
+		ProtocolMessage: &waE2E.ProtocolMessage{
+			Type: waE2E.ProtocolMessage_APP_STATE_SYNC_KEY_REQUEST.Enum(),
+			AppStateSyncKeyRequest: &waE2E.AppStateSyncKeyRequest{
+				KeyIDs: []*waE2E.AppStateSyncKeyId{{
+					KeyID: keyID,
+				}},
+			},
+		},
+	})
+	return err
+}
+
+// RecoverAppStateKeys tries to recover app-state sync keys from the user's other linked devices.
+//
+// If keyID is non-empty, it is requested first. The method then fetches app-state collections,
+// which can trigger automatic missing-key requests. It returns nil as soon as at least one key is stored.
+func (cli *Client) RecoverAppStateKeys(ctx context.Context, keyID []byte, wait time.Duration) error {
+	if cli == nil {
+		return ErrClientIsNil
+	}
+	if count, err := cli.AppStateKeyCount(ctx); err != nil {
+		return err
+	} else if count > 0 {
+		return nil
+	}
+	if wait <= 0 {
+		wait = 30 * time.Second
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+
+	var recoveryErrors []error
+	if len(keyID) > 0 {
+		if err := cli.RequestAppStateKey(waitCtx, keyID); err != nil {
+			recoveryErrors = append(recoveryErrors, fmt.Errorf("request key by id: %w", err))
+		} else if cli.waitForAppStateKey(waitCtx, min(wait, 5*time.Second)) {
+			return nil
+		}
+	}
+
+	for _, name := range appstate.AllPatchNames {
+		err := cli.FetchAppState(waitCtx, name, true, false)
+		if err != nil {
+			recoveryErrors = append(recoveryErrors, fmt.Errorf("%s: %w", name, err))
+		}
+		if count, countErr := cli.AppStateKeyCount(waitCtx); countErr != nil {
+			recoveryErrors = append(recoveryErrors, fmt.Errorf("count keys: %w", countErr))
+		} else if count > 0 {
+			return nil
+		}
+	}
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-waitCtx.Done():
+			if len(recoveryErrors) > 0 {
+				return fmt.Errorf("timed out waiting for app-state sync key share: %w; recovery errors: %v", waitCtx.Err(), recoveryErrors)
+			}
+			return fmt.Errorf("timed out waiting for app-state sync key share: %w", waitCtx.Err())
+		case <-ticker.C:
+			if count, err := cli.AppStateKeyCount(waitCtx); err != nil {
+				recoveryErrors = append(recoveryErrors, fmt.Errorf("count keys: %w", err))
+			} else if count > 0 {
+				return nil
+			}
+		}
+	}
+}
+
+func (cli *Client) waitForAppStateKey(ctx context.Context, wait time.Duration) bool {
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			count, _ := cli.AppStateKeyCount(context.WithoutCancel(ctx))
+			return count > 0
+		case <-timer.C:
+			count, _ := cli.AppStateKeyCount(context.WithoutCancel(ctx))
+			return count > 0
+		case <-ticker.C:
+			if count, _ := cli.AppStateKeyCount(ctx); count > 0 {
+				return true
+			}
+		}
+	}
+}
+
+// AddContact adds or updates a contact in the current account's app-state.
+func (cli *Client) AddContact(ctx context.Context, target types.JID, fullName string) error {
+	if err := cli.FetchAppState(ctx, appstate.WAPatchCriticalUnblockLow, true, false); err != nil {
+		return fmt.Errorf("sync contact app-state before add contact: %w", err)
+	}
+	return cli.SendAppState(ctx, appstate.BuildContact(target, fullName))
+}
+
+// DeleteMessageForMe deletes a message only from the current account's app-state.
+func (cli *Client) DeleteMessageForMe(ctx context.Context, target, sender types.JID, messageID types.MessageID, fromMe bool, messageTimestamp time.Time, deleteMedia bool) error {
+	if err := cli.FetchAppState(ctx, appstate.WAPatchRegularHigh, true, false); err != nil {
+		return fmt.Errorf("sync regular_high app-state before delete-for-me: %w", err)
+	}
+	return cli.SendAppState(ctx, appstate.BuildDeleteMessageForMe(target, sender, messageID, fromMe, messageTimestamp, deleteMedia))
+}
+
+// DeleteChatForMe deletes a chat only from the current account's app-state.
+func (cli *Client) DeleteChatForMe(ctx context.Context, target types.JID, lastMessageTimestamp time.Time, lastMessageKey *waCommon.MessageKey, deleteMedia bool) error {
+	if err := cli.FetchAppState(ctx, appstate.WAPatchRegularHigh, true, false); err != nil {
+		return fmt.Errorf("sync regular_high app-state before delete chat: %w", err)
+	}
+	return cli.SendAppState(ctx, appstate.BuildDeleteChat(target, lastMessageTimestamp, lastMessageKey, deleteMedia))
 }
 
 func (cli *Client) sendAppState(ctx context.Context, patch appstate.PatchInfo, allowRetry bool) error {

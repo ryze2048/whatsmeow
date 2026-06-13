@@ -123,6 +123,22 @@ type DeviceContainer interface {
 	DeleteDevice(ctx context.Context, store *Device) error
 }
 
+type DeviceGetter interface {
+	GetDevice(ctx context.Context, jid types.JID) (*Device, error)
+}
+
+type DeviceStateResetOptions struct {
+	// PreserveAppStateSyncKeys keeps whatsmeow_app_state_sync_keys when resetting
+	// state for a re-imported device. App-state versions/MACs are still cleared.
+	PreserveAppStateSyncKeys bool
+	// PreserveContacts keeps locally cached contacts and chat settings.
+	PreserveContacts bool
+}
+
+type DeviceStateResetter interface {
+	ResetDeviceState(ctx context.Context, jid types.JID, opts DeviceStateResetOptions) error
+}
+
 type MessageSecretInsert struct {
 	Chat   types.JID
 	Sender types.JID
