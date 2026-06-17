@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -35,6 +36,74 @@ type PatchInfo struct {
 	Type WAPatchName
 	// Mutations contains the individual mutations to apply to the app state in this patch.
 	Mutations []MutationInfo
+}
+
+// ContactInfo contains the contact fields used when syncing the WhatsApp contact list.
+type ContactInfo struct {
+	FirstName                string
+	FullName                 string
+	SaveOnPrimaryAddressBook bool
+}
+
+func newContactMutation(target types.JID, contact ContactInfo) MutationInfo {
+	return MutationInfo{
+		Index:   []string{IndexContact, target.String()},
+		Version: 2,
+		Value: &waSyncAction.SyncActionValue{
+			ContactAction: &waSyncAction.ContactAction{
+				FullName:                 proto.String(contact.FullName),
+				FirstName:                proto.String(contact.FirstName),
+				SaveOnPrimaryAddressbook: proto.Bool(contact.SaveOnPrimaryAddressBook),
+			},
+		},
+	}
+}
+
+func sortedContactJIDs(contacts map[types.JID]ContactInfo) []types.JID {
+	jids := make([]types.JID, 0, len(contacts))
+	for jid := range contacts {
+		jids = append(jids, jid)
+	}
+	sort.Slice(jids, func(i, j int) bool {
+		return jids[i].String() < jids[j].String()
+	})
+	return jids
+}
+
+// BuildContactAdd builds an app state patch for adding or updating a contact.
+func BuildContactAdd(target types.JID, contact ContactInfo) PatchInfo {
+	return PatchInfo{
+		Type: WAPatchCriticalUnblockLow,
+		Mutations: []MutationInfo{
+			newContactMutation(target, contact),
+		},
+	}
+}
+
+// BuildContactAdds builds an app state patch for adding or updating multiple contacts.
+func BuildContactAdds(contacts map[types.JID]ContactInfo) PatchInfo {
+	mutations := make([]MutationInfo, 0, len(contacts))
+	for _, jid := range sortedContactJIDs(contacts) {
+		mutations = append(mutations, newContactMutation(jid, contacts[jid]))
+	}
+	return PatchInfo{
+		Type:      WAPatchCriticalUnblockLow,
+		Mutations: mutations,
+	}
+}
+
+// BuildContactRemove builds an app state patch for removing a contact.
+func BuildContactRemove(target types.JID) PatchInfo {
+	return BuildContactAdd(target, ContactInfo{})
+}
+
+// BuildContactRemoves builds an app state patch for removing multiple contacts.
+func BuildContactRemoves(targets []types.JID) PatchInfo {
+	contacts := make(map[types.JID]ContactInfo, len(targets))
+	for _, target := range targets {
+		contacts[target] = ContactInfo{}
+	}
+	return BuildContactAdds(contacts)
 }
 
 // BuildMute builds an app state patch for muting or unmuting a chat.
