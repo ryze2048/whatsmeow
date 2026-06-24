@@ -223,11 +223,13 @@ func loadImportJobs(cfg config) ([]job, error) {
 	for _, path := range paths {
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("read creds %s: %w", path, err)
+			fmt.Printf("skipping unreadable creds path=%s err=%v\n", path, err)
+			continue
 		}
 		imported, err := baileysauth.Parse(data)
 		if err != nil {
-			return nil, fmt.Errorf("parse creds %s: %w", path, err)
+			fmt.Printf("skipping invalid creds path=%s err=%v\n", path, err)
+			continue
 		}
 		jid := imported.Device.GetJID().String()
 		if previous := seen[jid]; previous != "" {

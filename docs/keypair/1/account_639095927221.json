@@ -1,0 +1,54 @@
+{
+	"Phone": "639095927221",
+	"account": {
+		"accountSignature": "n5LV2fXtKask98EDVHreouxekjNhdbGWf9RVXjj40ZyHAXo1BfD6nxmsZleppCFTcZIfYZw7kUdTwNEpKRFLgA==",
+		"accountSignatureKey": "ODIZz1SgKyZF0g+oR4ll/vcA8biqL2N/xt33UH60Lng=",
+		"details": "COOklr8CEIz+7dEGGAMgACgA",
+		"deviceSignature": "DprFPDcWWtrqJ5lWSGFBBoHxfntesos6FwFlzd02a357XE7tTYBOwCiyEO+WsKeq4IsjMwVLmIUuayayn8FIBg=="
+	},
+	"advSecretKey": "6FvrPx17dYyCpmn6xVSGP5MirOQtZBTv/TdEfM6mCVs=",
+	"me": {
+		"id": "639095927221:1@s.whatsapp.net",
+		"lid": "",
+		"name": ""
+	},
+	"noiseKey": {
+		"private": {
+			"data": "OKxCco4thPSoy/YtCuaB63KoVlP68mRP2zkDRho+rVY=",
+			"type": "Buffer"
+		},
+		"public": {
+			"data": "W7a5cxTK7uLZS9UkMYCUghz6eeRKcD2pAR9hInmI7WE=",
+			"type": "Buffer"
+		}
+	},
+	"platform": "android",
+	"registrationId": 9695,
+	"signedIdentityKey": {
+		"private": {
+			"data": "mNHiPmOtmvkQqCe50xb1D72c6ryWa8YugF4KdgP7TFE=",
+			"type": "Buffer"
+		},
+		"public": {
+			"data": "ODIZz1SgKyZF0g+oR4ll/vcA8biqL2N/xt33UH60Lng=",
+			"type": "Buffer"
+		}
+	},
+	"signedPreKey": {
+		"keyId": 1,
+		"keyPair": {
+			"private": {
+				"data": "QL+W9IgIzrWb82z7MV0ys9hj5nHByrR2yWwXhErQiFo=",
+				"type": "Buffer"
+			},
+			"public": {
+				"data": "3iNs7caCyD6dxjY6rvIfOfmGrsXGwLrRsa4LJFxE5Wc=",
+				"type": "Buffer"
+			}
+		},
+		"signature": {
+			"data": "AM6LN1Ta1vqESLmnrZw/F5aaShvjVwUlaVPqoWEv6Y3J5+eF7ldDrCkYG1nNXw2QrpWupm8yiVzXObAcw2gyCA==",
+			"type": "Buffer"
+		}
+	}
+}
