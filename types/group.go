@@ -162,6 +162,14 @@ type GroupLinkChange struct {
 	Group        GroupLinkTarget
 }
 
+// CommunityMergeRequest contains an outstanding request to merge a regular group
+// into a community.
+type CommunityMergeRequest struct {
+	Group        GroupLinkTarget
+	RequesterJID JID
+	RequestedAt  time.Time
+}
+
 type GroupParticipantRequest struct {
 	JID         JID
 	RequestedAt time.Time
