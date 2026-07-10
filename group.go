@@ -164,6 +164,22 @@ func (cli *Client) LinkGroup(ctx context.Context, parent, child types.JID) error
 	return err
 }
 
+// SubmitCommunityMergeRequest asks the admins of community to merge group into it.
+//
+// The current user must be an admin of group. Community admins can inspect the
+// request with GetPendingCommunityMergeRequests and accept or reject it with
+// UpdateCommunityMergeRequest.
+func (cli *Client) SubmitCommunityMergeRequest(ctx context.Context, community, group types.JID) error {
+	_, err := cli.sendGroupIQ(ctx, iqSet, community, waBinary.Node{
+		Tag: "merge_request",
+		Content: []waBinary.Node{{
+			Tag:   "group",
+			Attrs: waBinary.Attrs{"jid": group},
+		}},
+	})
+	return err
+}
+
 // LeaveGroup leaves the specified group on WhatsApp.
 func (cli *Client) LeaveGroup(ctx context.Context, jid types.JID) error {
 	_, err := cli.sendGroupIQ(ctx, iqSet, types.GroupServerJID, waBinary.Node{
