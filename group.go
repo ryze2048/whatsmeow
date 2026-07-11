@@ -180,6 +180,49 @@ func (cli *Client) SubmitCommunityMergeRequest(ctx context.Context, community, g
 	return err
 }
 
+// CommunityMergeRequestAction is the decision made by a community admin for a
+// pending community merge request.
+type CommunityMergeRequestAction string
+
+const (
+	CommunityMergeRequestApprove CommunityMergeRequestAction = "approve"
+	CommunityMergeRequestReject  CommunityMergeRequestAction = "reject"
+)
+
+// GetPendingCommunityMergeRequests returns regular-group merge requests that
+// are waiting for approval by an admin of community.
+func (cli *Client) GetPendingCommunityMergeRequests(ctx context.Context, community types.JID) ([]types.CommunityMergeRequest, error) {
+	resp, err := cli.sendGroupIQ(ctx, iqGet, community, waBinary.Node{Tag: "merge_requests"})
+	if err != nil {
+		return nil, err
+	}
+	requests, ok := resp.GetOptionalChildByTag("merge_requests")
+	if !ok {
+		return nil, &ElementMissingError{Tag: "merge_requests", In: "response to community merge requests query"}
+	}
+	parsedRequests := make([]types.CommunityMergeRequest, 0, len(requests.GetChildren()))
+	for _, request := range requests.GetChildren() {
+		if request.Tag != "merge_request" {
+			continue
+		}
+		group, ok := request.GetOptionalChildByTag("group")
+		if !ok {
+			return parsedRequests, &ElementMissingError{Tag: "group", In: "community merge request"}
+		}
+		parsedGroup, err := parseGroupLinkTargetNode(&group)
+		if err != nil {
+			return parsedRequests, fmt.Errorf("failed to parse group in community merge request: %w", err)
+		}
+		ag := request.AttrGetter()
+		parsedRequests = append(parsedRequests, types.CommunityMergeRequest{
+			Group:        parsedGroup,
+			RequesterJID: ag.OptionalJIDOrEmpty("requester"),
+			RequestedAt:  ag.OptionalUnixTime("request_time"),
+		})
+	}
+	return parsedRequests, nil
+}
+
 // LeaveGroup leaves the specified group on WhatsApp.
 func (cli *Client) LeaveGroup(ctx context.Context, jid types.JID) error {
 	_, err := cli.sendGroupIQ(ctx, iqSet, types.GroupServerJID, waBinary.Node{
