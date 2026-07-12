@@ -223,6 +223,39 @@ func (cli *Client) GetPendingCommunityMergeRequests(ctx context.Context, communi
 	return parsedRequests, nil
 }
 
+// UpdateCommunityMergeRequest approves or rejects a pending request to merge
+// group into community.
+func (cli *Client) UpdateCommunityMergeRequest(ctx context.Context, community, group types.JID, action CommunityMergeRequestAction) error {
+	if action != CommunityMergeRequestApprove && action != CommunityMergeRequestReject {
+		return fmt.Errorf("invalid community merge request action %q", action)
+	}
+	_, err := cli.sendGroupIQ(ctx, iqSet, community, waBinary.Node{
+		Tag: "merge_requests_action",
+		Content: []waBinary.Node{{
+			Tag: string(action),
+			Content: []waBinary.Node{{
+				Tag:   "group",
+				Attrs: waBinary.Attrs{"jid": group},
+			}},
+		}},
+	})
+	return err
+}
+
+// TransferCommunityOwnership assigns the community owner role to newOwner.
+// The current user must be the community owner and newOwner must be a community
+// admin.
+func (cli *Client) TransferCommunityOwnership(ctx context.Context, community, newOwner types.JID) error {
+	_, err := cli.sendGroupIQ(ctx, iqSet, community, waBinary.Node{
+		Tag: "owner",
+		Content: []waBinary.Node{{
+			Tag:   "participant",
+			Attrs: waBinary.Attrs{"jid": newOwner},
+		}},
+	})
+	return err
+}
+
 // LeaveGroup leaves the specified group on WhatsApp.
 func (cli *Client) LeaveGroup(ctx context.Context, jid types.JID) error {
 	_, err := cli.sendGroupIQ(ctx, iqSet, types.GroupServerJID, waBinary.Node{
